@@ -12,6 +12,9 @@ pub enum Error {
     /// Represents all kind of runtime errors that can be faced by a client, like a bogus HTTP connection for example.
     #[error(transparent)]
     RuntimeError(#[from] RuntimeErrorKind),
+
+    #[error(transparent)]
+    WrapError(#[from] keybroker_common::evidence_log::Error),
 }
 
 /// Enumeration holding the different kind of runtime errors (in contrast to genuine

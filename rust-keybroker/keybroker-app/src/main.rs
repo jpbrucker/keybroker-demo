@@ -4,6 +4,7 @@
 use clap::Parser;
 use keybroker_client::error::Error as KeybrokerError;
 use keybroker_client::{CcaExampleToken, KeyBrokerClient, TsmAttestationReport};
+use keybroker_common::evidence_log::{DefaultLogReader, LinuxTsmLogReader};
 use std::process;
 
 /// Structure for parsing and storing the command-line arguments
@@ -42,9 +43,13 @@ fn main() {
     let client = KeyBrokerClient::new(&args.endpoint);
 
     let attestation_result = if args.mock_evidence {
-        client.get_key(&args.key_name, &CcaExampleToken {})
+        client.get_key(&args.key_name, &CcaExampleToken {}, &DefaultLogReader {})
     } else {
-        client.get_key(&args.key_name, &TsmAttestationReport {})
+        client.get_key(
+            &args.key_name,
+            &TsmAttestationReport {},
+            &LinuxTsmLogReader {},
+        )
     };
 
     // If the attestation was successful, print the key we got from the keybroker and exit with code 0.

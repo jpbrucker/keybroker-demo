@@ -3,8 +3,10 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
+use keybroker_common::evidence_log::{LogReader, WrappedEvidence};
 use keybroker_common::{
-    BackgroundCheckKeyRequest, ErrorInformation, PublicWrappingKey, WrappedKeyData,
+    BackgroundCheckKeyRequest, ErrorInformation, EvidenceContentType, PublicWrappingKey,
+    WrappedKeyData, MEDIA_TYPE_CMW_CCA, MEDIA_TYPE_EAT_CCA,
 };
 use reqwest::StatusCode;
 use rsa::{traits::PublicKeyParts, BigUint, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
@@ -212,6 +214,7 @@ impl EvidenceProvider for TsmAttestationReport {
 struct AttestationChallenge {
     pub challenge: String,
     pub evidence_submission_url: String,
+    pub accept: Vec<EvidenceContentType>,
 }
 
 /// The KeyBrokerSession models the communication with a keybroker server.
@@ -232,6 +235,37 @@ impl KeyBrokerClient {
             client: reqwest::blocking::Client::new(),
             keybroker_url_base: endpoint.to_string(),
         }
+    }
+
+    /// Returns the media type along with wrapped evidence
+    fn wrap_evidence<'a, LR: LogReader>(
+        &self,
+        accept: &'a [EvidenceContentType],
+        evidence: Vec<u8>,
+        log_reader: Option<&LR>,
+    ) -> Result<(&'a EvidenceContentType, Vec<u8>)> {
+        if let Some(log_reader) = log_reader {
+            if let Some(media) = accept.iter().find(|v| v == &MEDIA_TYPE_CMW_CCA) {
+                match WrappedEvidence::wrap_with_log(evidence, log_reader) {
+                    Ok(wrapped_evidence) => return Ok((media, wrapped_evidence.to_cbor()?)),
+                    Err(e) => {
+                        return Err(KeybrokerError::RuntimeError(
+                            RuntimeErrorKind::EvidenceGeneration(format!(
+                                "cannot wrap evidence alongside log: {e}"
+                            )),
+                        ))
+                    }
+                }
+            }
+        }
+
+        if let Some(media) = accept.iter().find(|v| v == &MEDIA_TYPE_EAT_CCA) {
+            return Ok((media, evidence));
+        }
+
+        Err(KeybrokerError::RuntimeError(
+            RuntimeErrorKind::EvidenceGeneration("unsupported media types".to_string()),
+        ))
     }
 
     /// The first API call to request the key. This gets all the required
@@ -289,6 +323,7 @@ impl KeyBrokerClient {
 
                 Ok(AttestationChallenge {
                     challenge: ac.challenge,
+                    accept: ac.accept,
                     evidence_submission_url,
                 })
             }
@@ -304,6 +339,7 @@ impl KeyBrokerClient {
     fn submit_evidence(
         self: &KeyBrokerClient,
         evidence_submission_url: &str,
+        evidence_media_type: &str,
         evidence: &[u8],
     ) -> Result<Vec<u8>> {
         log::info!("Submitting evidence to URL {evidence_submission_url}");
@@ -312,10 +348,7 @@ impl KeyBrokerClient {
         match self
             .client
             .post(evidence_submission_url)
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/eat-collection; profile=\"http://arm.com/CCA-SSD/1.0.0\"",
-            )
+            .header(reqwest::header::CONTENT_TYPE, evidence_media_type)
             .body(URL_SAFE_NO_PAD.encode(evidence))
             .send()
         {
@@ -380,10 +413,11 @@ impl KeyBrokerClient {
     }
 
     /// Get the wrapped key, decryption left to the caller.
-    pub fn get_wrapped_key<EP: EvidenceProvider>(
+    pub fn get_wrapped_key<EP: EvidenceProvider, LR: LogReader>(
         self: &KeyBrokerClient,
         key_name: &str,
         evidence_provider: &EP,
+        log_reader: Option<&LR>,
         pub_key: &RsaPublicKey,
     ) -> Result<Vec<u8>> {
         // First API call: request the challenge.
@@ -413,15 +447,30 @@ impl KeyBrokerClient {
             }
         };
 
+        // Add logs if they exist and the server accepts them
+        let (media, evidence) = self.wrap_evidence(&data.accept, evidence, log_reader)?;
+        log::debug!("submit evidence with media={media}");
+
         // Second API call: submit the evidence, and return the attestation result.
-        self.submit_evidence(&data.evidence_submission_url, &evidence)
+        self.submit_evidence(&data.evidence_submission_url, media, &evidence)
+    }
+
+    fn decrypt_key(&self, priv_key: &RsaPrivateKey, ciphertext: Vec<u8>) -> Result<Vec<u8>> {
+        match priv_key.decrypt(Pkcs1v15Encrypt, &ciphertext) {
+            Ok(plaintext) => Ok(plaintext),
+            Err(error) => Err(KeybrokerError::RuntimeError(RuntimeErrorKind::Decrypt(
+                "ciphertext".to_string(),
+                format!("{error:?}"),
+            ))),
+        }
     }
 
     /// This returns the plain text.
-    pub fn get_key<EP: EvidenceProvider>(
+    pub fn get_key<EP: EvidenceProvider, LR: LogReader>(
         self: &KeyBrokerClient,
         key_name: &str,
         evidence_provider: &EP,
+        log_reader: &LR,
     ) -> Result<Vec<u8>> {
         // Create an ephemeral wrapping key-pair for our own use.
         let mut rng = rand::thread_rng();
@@ -429,15 +478,18 @@ impl KeyBrokerClient {
             .expect("Failed to generate ephemeral wrapping key.");
         let pub_key = RsaPublicKey::from(&priv_key);
 
-        match self.get_wrapped_key(key_name, evidence_provider, &pub_key) {
-            Ok(ciphertext) => match priv_key.decrypt(Pkcs1v15Encrypt, &ciphertext) {
-                Ok(plaintext) => Ok(plaintext),
-                Err(error) => Err(KeybrokerError::RuntimeError(RuntimeErrorKind::Decrypt(
-                    "ciphertext".to_string(),
-                    format!("{error:?}"),
-                ))),
-            },
-            other => other,
+        // First try without an event log, to avoid wasting bandwidth
+        match self.get_wrapped_key::<EP, LR>(key_name, evidence_provider, None, &pub_key) {
+            Ok(ciphertext) => self.decrypt_key(&priv_key, ciphertext),
+            _ => {
+                // Oops that didn't work. Retry with the log, in case the server can
+                // generate the reference values.
+                match self.get_wrapped_key(key_name, evidence_provider, Some(log_reader), &pub_key)
+                {
+                    Ok(ciphertext) => self.decrypt_key(&priv_key, ciphertext),
+                    other => other,
+                }
+            }
         }
     }
 }
