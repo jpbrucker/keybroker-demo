@@ -28,3 +28,4 @@ sha2.workspace = true
 stderrlog.workspace = true
 thiserror.workspace = true
 veraison-apiclient.workspace = true
+cca-realm-measurements = { git = "https://github.com/veraison/cca-realm-measurements.git" }
