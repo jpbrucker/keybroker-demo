@@ -5,6 +5,8 @@
 //! along with the serialization functionality that allows them to be transacted over HTTP. The small collection
 //! of data types in this library are consumed by both the server and the client.
 
+pub mod evidence_log;
+
 /// Represents a single attestation challenge (nonce).
 ///
 /// Challenges are formed in response to a key access request. The purpose of the key broker is to provide
@@ -56,6 +58,14 @@ pub struct ErrorInformation {
 pub type EvidenceBytes = String;
 
 pub type EvidenceContentType = String;
+
+/* A CMW that contains a CCA token and an event log */
+pub const MEDIA_TYPE_CMW_CCA: &str = "application/cmw+cbor; cmwc_t=\"tag:linaro.org,2024:eat+log\"";
+/* The media type for the event log */
+pub const MEDIA_TYPE_TPM_LOG: &str = "application/vnd.veraison.tcg-tpm2-log";
+/* The former media type for the CCA token */
+pub const MEDIA_TYPE_EAT_CCA: &str =
+    "application/eat-collection; profile=\"http://arm.com/CCA-SSD/1.0.0\"";
 
 /// The public portion of a wrapping key pair used to protect keys/secrets in transit between the client and
 /// the server.
