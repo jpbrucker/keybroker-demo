@@ -11,7 +11,7 @@ members = [
 actix-web = "4"
 anyhow = "1.0.89"
 base64 = "0.22.1"
-clap = { version = "=4.3.24", features = ["derive", "std"] }
+clap = { version = "4.3.24", features = ["derive", "std"] }
 ear = { git = "https://github.com/veraison/rust-ear.git" }
 log = { version = "0.4.22", features = ["std", "serde"] }
 phf = "0.11.2"
