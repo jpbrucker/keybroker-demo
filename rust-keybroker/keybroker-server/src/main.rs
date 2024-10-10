@@ -8,7 +8,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use challenge::Challenger;
 use clap::Parser;
-use keybroker_common::{AttestationChallenge, BackgroundCheckKeyRequest, ErrorInformation};
+use keybroker_common::{
+    AttestationChallenge, BackgroundCheckKeyRequest, ErrorInformation, MEDIA_TYPE_CMW_CCA,
+    MEDIA_TYPE_EAT_CCA,
+};
 use keystore::KeyStore;
 use verifier::CcaDiagnostics;
 mod challenge;
@@ -34,7 +37,8 @@ async fn request_key(
     let attestation_challenge = AttestationChallenge {
         challenge: URL_SAFE_NO_PAD.encode(&challenge.challenge_value),
         accept: vec![
-            "application/eat-collection; profile=http://arm.com/CCA-SSD/1.0.0".to_string(),
+            MEDIA_TYPE_EAT_CCA.to_string(),
+            MEDIA_TYPE_CMW_CCA.to_string(),
         ],
     };
 

@@ -4,6 +4,7 @@
 use crate::error::{Error, Result, VerificationErrorKind};
 use crate::policy;
 use ear::{Algorithm, Ear};
+use keybroker_common::{evidence_log::WrappedEvidence, MEDIA_TYPE_CMW_CCA, MEDIA_TYPE_TPM_LOG};
 use veraison_apiclient::*;
 
 /// The trait that must be implemented to emit diagnostics for specific flavours of EAR.
@@ -54,6 +55,21 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     reference_values: &Option<String>,
     diagnostics: &DE,
 ) -> Result<bool> {
+    let mut media_type: String = media_type.to_string();
+    let mut evidence: Vec<u8> = evidence.to_vec();
+
+    let mut event_log = None;
+
+    // Unwrap the evidence if it comes with an event log
+    if media_type == MEDIA_TYPE_CMW_CCA {
+        let wrapped = WrappedEvidence::from_cbor(&evidence)
+            .map_err(|e| crate::error::Error::EventLog(e.to_string()))?;
+
+        event_log = Some(wrapped.event_log);
+        media_type = wrapped.evidence.0;
+        evidence = wrapped.evidence.1;
+    };
+
     // Get the discovery URL from the base URL
     let discovery = Discovery::from_base_url(String::from(verifier_base_url))?;
 
@@ -84,7 +100,7 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     let (session_url, _session) = cr.new_session(&nonce)?;
 
     // Run the challenge-response session
-    let ear_string = cr.challenge_response(evidence, media_type, &session_url)?;
+    let ear_string = cr.challenge_response(&evidence, &media_type, &session_url)?;
 
     // EARs are signed by Veraison. The public verification key is conveyed within the
     // endpoint descriptor that we pulled from the discovery API before. We can grab this
@@ -106,7 +122,7 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     let ear_claims = serde_json::to_string(&ear)?;
 
     let (policy, policy_rule) = policy::MEDIATYPES_TO_POLICY
-        .get(media_type)
+        .get(&media_type)
         .ok_or(VerificationErrorKind::PolicyNotFound)?;
 
     // Ensure we have known-good reference values. If not, provide a useful and actionnable

@@ -45,6 +45,10 @@ pub enum Error {
     /// Represents errors from the use of the JSON serialisation and deserialisation library.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    /// Represents errors while handling event logs
+    #[error("while handling event log: {0}")]
+    EventLog(String),
 }
 
 /// Errors happening within the verification process logic.
