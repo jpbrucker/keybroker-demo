@@ -3,6 +3,7 @@
 
 use crate::error::{Error, Result, VerificationErrorKind};
 use crate::policy;
+use crate::refvals::SharedReferenceValues;
 use ear::{Algorithm, Ear};
 use keybroker_common::{evidence_log::WrappedEvidence, MEDIA_TYPE_CMW_CCA, MEDIA_TYPE_TPM_LOG};
 use veraison_apiclient::*;
@@ -52,7 +53,7 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     challenge_id: &u32,
     challenge: &[u8],
     evidence: &[u8],
-    reference_values: &Option<String>,
+    reference_values: SharedReferenceValues,
     diagnostics: &DE,
 ) -> Result<bool> {
     let mut media_type: String = media_type.to_string();
@@ -127,7 +128,7 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
 
     // Ensure we have known-good reference values. If not, provide a useful and actionnable
     // diagnostic to the user.
-    if reference_values.is_none() {
+    if reference_values.read().unwrap().is_empty() {
         diagnostics.emit_no_reference_values(challenge_id, &ear)?;
         return Err(Error::Verification(
             VerificationErrorKind::NoReferenceValues,
@@ -138,12 +139,7 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     // unless a custom one has been provided on the command line.  The default
     // policy also wants to match the RIM value reported by the CCA token with
     // the known-good reference values supplied on the command line.
-    let results = policy::rego_eval(
-        policy,
-        policy_rule,
-        reference_values.as_ref().unwrap(),
-        &ear_claims,
-    )?;
+    let results = policy::rego_eval(policy, policy_rule, &reference_values, &ear_claims)?;
 
     Ok(results.to_string() == "true")
 }

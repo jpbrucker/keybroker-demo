@@ -1,7 +1,7 @@
 // Copyright 2024 Contributors to the Veraison project.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use actix_web::{http, post, rt::task, web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -13,11 +13,13 @@ use keybroker_common::{
     MEDIA_TYPE_EAT_CCA,
 };
 use keystore::KeyStore;
+use refvals::{ReferenceValues, SharedReferenceValues};
 use verifier::CcaDiagnostics;
 mod challenge;
 mod error;
 mod keystore;
 pub mod policy;
+mod refvals;
 mod verifier;
 
 #[post("/key/{keyid}")]
@@ -105,7 +107,7 @@ async fn submit_evidence(
 
     let verifier_base = data.args.verifier.clone();
 
-    let reference_values = data.args.reference_values.clone();
+    let reference_values = Arc::clone(&data.reference_values);
 
     // We are in an async context, but the verifier client is synchronous, so spawn
     // it as a blocking task.
@@ -120,7 +122,7 @@ async fn submit_evidence(
             &challenge.challenge_id,
             &challenge.challenge_value,
             &evidence_bytes,
-            &reference_values,
+            reference_values,
             &CcaDiagnostics {},
         )
     });
@@ -214,6 +216,7 @@ struct ServerState {
     args: Args,
     endpoint: String,
     keystore: Mutex<KeyStore>,
+    reference_values: SharedReferenceValues,
     challenger: Mutex<Challenger>,
 }
 
@@ -236,6 +239,13 @@ async fn main() -> std::io::Result<()> {
         "May the force be with you.".as_bytes().to_vec(),
     );
 
+    let reference_values = args
+        .reference_values
+        .as_ref()
+        .map(|f| ReferenceValues::from_file(f))
+        .transpose()?
+        .unwrap_or_default();
+
     let server_state = ServerState {
         args: args.clone(),
         endpoint: match args.endpoint {
@@ -244,6 +254,7 @@ async fn main() -> std::io::Result<()> {
         },
         keystore: Mutex::new(keystore),
         challenger: Mutex::new(challenger),
+        reference_values: reference_values.into_shared(),
     };
 
     let app_data = web::Data::new(server_state);

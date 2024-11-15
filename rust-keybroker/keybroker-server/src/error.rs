@@ -66,6 +66,10 @@ pub enum VerificationErrorKind {
     #[error("No known-good reference values.")]
     NoReferenceValues,
 
+    /// Unable to retrieve reference values
+    #[error("Unable to retrieve reference values: {0}")]
+    ReferenceValuesNotFound(#[from] std::io::Error),
+
     /// Represents errors in the CCA flavor of an EAR
     #[error("EAR/CCA error: {0}")]
     EARCCAError(String),
