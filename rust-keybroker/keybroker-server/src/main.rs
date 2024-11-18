@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use actix_web::{http, post, rt::task, web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
+use cca_realm_measurements::{DTBTemplates, EventLogParser, MeasurementImages};
 use challenge::Challenger;
 use clap::Parser;
 use keybroker_common::{
@@ -109,6 +110,8 @@ async fn submit_evidence(
 
     let reference_values = Arc::clone(&data.reference_values);
 
+    let log_parser = Arc::clone(&data.log_parser);
+
     // We are in an async context, but the verifier client is synchronous, so spawn
     // it as a blocking task.
     let handle = task::spawn_blocking(move || {
@@ -123,6 +126,7 @@ async fn submit_evidence(
             &challenge.challenge_value,
             &evidence_bytes,
             reference_values,
+            log_parser,
             &CcaDiagnostics {},
         )
     });
@@ -210,6 +214,18 @@ struct Args {
     /// File containing a JSON array with base64-encoded known-good reference values
     #[arg(long, default_value = None)]
     reference_values: Option<String>,
+
+    /// File containing checksums and paths of images loaded into the Realm,
+    /// generated for example by sha256sum
+    #[arg(long, default_value = None)]
+    images: Option<String>,
+
+    /// File containing a list of DTB template files, that can be used to
+    /// generate and measure the VM DTB. Each line contains three fields
+    /// separated by a tabulation: VMM name ("kvmtool"), VMM version ("3.14"),
+    /// DTB path.
+    #[arg(long, default_value = None)]
+    dtbs: Option<String>,
 }
 
 struct ServerState {
@@ -218,6 +234,7 @@ struct ServerState {
     keystore: Mutex<KeyStore>,
     reference_values: SharedReferenceValues,
     challenger: Mutex<Challenger>,
+    log_parser: Arc<EventLogParser>,
 }
 
 #[actix_web::main]
@@ -239,6 +256,24 @@ async fn main() -> std::io::Result<()> {
         "May the force be with you.".as_bytes().to_vec(),
     );
 
+    let mut log_parser = EventLogParser::new();
+
+    if let Some(f) = &args.images {
+        let images = MeasurementImages::from_checksums(f).map_err(|e| {
+            log::error!("while reading {f}: {e:?}");
+            std::io::Error::other(e)
+        })?;
+        log_parser.images(images);
+    }
+
+    if let Some(f) = &args.dtbs {
+        let dtbs = DTBTemplates::from_file_list(f).map_err(|e| {
+            log::error!("while reading {f}: {e:?}");
+            std::io::Error::other(e)
+        })?;
+        log_parser.dtbs(dtbs);
+    };
+
     let reference_values = args
         .reference_values
         .as_ref()
@@ -255,6 +290,7 @@ async fn main() -> std::io::Result<()> {
         keystore: Mutex::new(keystore),
         challenger: Mutex::new(challenger),
         reference_values: reference_values.into_shared(),
+        log_parser: Arc::new(log_parser),
     };
 
     let app_data = web::Data::new(server_state);

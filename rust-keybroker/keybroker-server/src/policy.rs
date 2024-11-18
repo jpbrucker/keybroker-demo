@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::error::Result;
-use crate::refvals::SharedReferenceValues;
+use crate::refvals::{ReferenceValues, SharedReferenceValues};
 use phf::{phf_map, Map};
 use regorus::{self, Value};
 use std::collections::BTreeMap;
@@ -17,8 +17,9 @@ pub(crate) fn rego_eval(
     policy: &str,
     policy_rule: &str,
     reference_values: &SharedReferenceValues,
+    gen_reference_values: &ReferenceValues,
     ear_claims: &str,
-) -> Result<Value> {
+) -> Result<bool> {
     // Create engine.
     let mut engine = regorus::Engine::new();
 
@@ -30,7 +31,8 @@ pub(crate) fn rego_eval(
 
     // Pack the reference values into regorus Value
     let rv = reference_values.read().unwrap().as_regorus_data();
-    let data = [("reference-values", rv)]
+    let grv = gen_reference_values.as_regorus_data();
+    let data = [("reference-values", rv), ("dynamic-reference-values", grv)]
         .into_iter()
         .map(|(k, v)| (Value::from(k), v))
         .collect::<BTreeMap<Value, Value>>();
@@ -43,7 +45,7 @@ pub(crate) fn rego_eval(
 
     let results = engine.eval_rule(policy_rule.to_string())?;
 
-    Ok(results)
+    Ok(*results.as_bool()?)
 }
 
 #[cfg(test)]
@@ -61,6 +63,7 @@ mod tests {
             include_str!("arm-cca.rego"),
             "data.arm_cca.allow",
             &reference_values.into_shared(),
+            &ReferenceValues::new(),
             ear_claims,
         )
         .expect("successful eval");
@@ -78,6 +81,7 @@ mod tests {
             include_str!("arm-cca.rego"),
             "data.arm_cca.allow",
             &reference_values.into_shared(),
+            &ReferenceValues::new(),
             ear_claims,
         )
         .expect("successful eval");

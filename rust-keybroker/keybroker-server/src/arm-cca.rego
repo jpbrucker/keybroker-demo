@@ -16,8 +16,11 @@ allow if {
     rtv := rrec["ear.trustworthiness-vector"]
     rtv["instance-identity"] == 2
 
-    # check RIM value against known-good-values
+    # Check RIM value against known-good-values.
+    # For the moment we accept any REM value. Later we may want to only accept
+    # zero values and check non-zero ones against known-good-values. Should we
+    # also reject zero values?
     rclaims := rrec["ear.veraison.annotated-evidence"]
     rim := rclaims["cca-realm-initial-measurement"]
-    rim in data["reference-values"]
+    rim in (data["reference-values"] | data["dynamic-reference-values"])
 }

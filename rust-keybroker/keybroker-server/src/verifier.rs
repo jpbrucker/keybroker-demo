@@ -3,10 +3,14 @@
 
 use crate::error::{Error, Result, VerificationErrorKind};
 use crate::policy;
-use crate::refvals::SharedReferenceValues;
-use ear::{Algorithm, Ear};
-use keybroker_common::{evidence_log::WrappedEvidence, MEDIA_TYPE_CMW_CCA, MEDIA_TYPE_TPM_LOG};
+use crate::refvals::{ReferenceValues, SharedReferenceValues};
+use ear::{Algorithm, Ear, RawValue};
+use keybroker_common::evidence_log::{WrappedEvidence, WrappedMeasurementLog};
+use keybroker_common::{MEDIA_TYPE_CMW_CCA, MEDIA_TYPE_TPM_LOG};
+use std::sync::Arc;
 use veraison_apiclient::*;
+
+use cca_realm_measurements::{EventLogParser, Realm};
 
 /// The trait that must be implemented to emit diagnostics for specific flavours of EAR.
 pub trait EmitDiagnostic {
@@ -47,6 +51,75 @@ impl EmitDiagnostic for CcaDiagnostics {
     }
 }
 
+fn reference_values_from_event_log(
+    event_log: &WrappedMeasurementLog,
+    log_parser: &Arc<EventLogParser>,
+) -> Result<[String; 5]> {
+    if event_log.0 != MEDIA_TYPE_TPM_LOG {
+        return Err(crate::error::Error::EventLog(format!(
+            "unsupported event log type {}",
+            event_log.0
+        )));
+    }
+
+    let mut realm = Realm::new();
+    // Try to parse the event log and build the reference values
+    log_parser
+        .parse_tcg_log(&event_log.1, &mut realm)
+        .map_err(|e| crate::error::Error::EventLog(e.to_string()))?;
+
+    Ok(realm.measurements.to_base64_array())
+}
+
+fn gen_reference_values_from_log(
+    ear: &Ear,
+    event_log: &Option<WrappedMeasurementLog>,
+    reference_values: &SharedReferenceValues,
+    log_parser: &Arc<EventLogParser>,
+) -> ReferenceValues {
+    let mut evidence_measurements = vec![];
+    let mut gen_refvals = ReferenceValues::new();
+
+    let Some(log) = event_log else {
+        return gen_refvals;
+    };
+
+    // Extract measurements from the annotated evidence
+    if ear.profile == "tag:github.com,2023:veraison/ear" {
+        if let Some(appraisal) = ear.submods.get("CCA_REALM") {
+            // TODO: REMs
+            if let Some(RawValue::Text(rim)) = appraisal
+                .annotated_evidence
+                .get("cca-realm-initial-measurement")
+            {
+                evidence_measurements.push(rim);
+            }
+        }
+    }
+
+    // If some measurements are missing from the reference values, see if we can
+    // generate them using the event log
+    for v in &evidence_measurements {
+        if !reference_values.read().unwrap().contains(v) {
+            match reference_values_from_event_log(log, log_parser) {
+                Ok(rv) => {
+                    // TODO: REMs
+                    let val = rv.into_iter().next().unwrap();
+                    gen_refvals.insert(val);
+                }
+                Err(e) => {
+                    log::error!("failed to construct reference values from event log: {e}");
+                }
+            }
+
+            // All reference values are now generated.
+            break;
+        }
+    }
+
+    gen_refvals
+}
+
 pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     verifier_base_url: &str,
     media_type: &str,
@@ -54,6 +127,7 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     challenge: &[u8],
     evidence: &[u8],
     reference_values: SharedReferenceValues,
+    log_parser: Arc<EventLogParser>,
     diagnostics: &DE,
 ) -> Result<bool> {
     let mut media_type: String = media_type.to_string();
@@ -126,9 +200,19 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
         .get(&media_type)
         .ok_or(VerificationErrorKind::PolicyNotFound)?;
 
-    // Ensure we have known-good reference values. If not, provide a useful and actionnable
-    // diagnostic to the user.
-    if reference_values.read().unwrap().is_empty() {
+    // The policy file will most likely compare the measurements against
+    // known-good reference values. See if we can generate missing reference
+    // values using known-good images.
+    //
+    // TODO: does the policy want to perform checks on the log?  Maybe Realm
+    // parameters, RIPAS range, etc?  Those are not checked against known-good
+    // values unlike the DATA granules, so the policy could perform extra tests.
+    let mut gen_refvals =
+        gen_reference_values_from_log(&ear, &event_log, &reference_values, &log_parser);
+
+    // Ensure we have known-good reference values. If not, provide a useful
+    // and actionnable diagnostic to the user.
+    if reference_values.read().unwrap().is_empty() && gen_refvals.is_empty() {
         diagnostics.emit_no_reference_values(challenge_id, &ear)?;
         return Err(Error::Verification(
             VerificationErrorKind::NoReferenceValues,
@@ -139,7 +223,22 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
     // unless a custom one has been provided on the command line.  The default
     // policy also wants to match the RIM value reported by the CCA token with
     // the known-good reference values supplied on the command line.
-    let results = policy::rego_eval(policy, policy_rule, &reference_values, &ear_claims)?;
+    let policy_ok = policy::rego_eval(
+        policy,
+        policy_rule,
+        &reference_values,
+        &gen_refvals,
+        &ear_claims,
+    )?;
 
-    Ok(results.to_string() == "true")
+    // Update reference values
+    if policy_ok {
+        // TODO: REM
+        if let Some(rv) = gen_refvals.pop_first() {
+            log::debug!("Caching reference value {rv}");
+            reference_values.write().unwrap().insert(rv);
+        }
+    }
+
+    Ok(policy_ok)
 }

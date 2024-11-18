@@ -70,6 +70,37 @@ impl ReferenceValues {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+
+    /// Test if we have this reference value
+    pub fn contains(&self, value: &str) -> bool {
+        self.values.contains(&Value::from(value))
+    }
+
+    /// Add value to the reference values.
+    ///
+    /// Note that it's a programming error to call this method while a reference
+    /// to values is held (obtained with as_regorus_data()). Ensure you protect
+    /// this instance with a Mutex or RwLock via SharedReferenceValues, to make
+    /// this situation impossible.
+    pub fn insert(&mut self, value: String) {
+        Arc::get_mut(&mut self.values)
+            .expect("ReferenceValues must be locked for writing")
+            .insert(Value::from(value));
+    }
+
+    /// Pop the first reference value.
+    ///
+    /// Note that it's a programming error to call this method while a reference
+    /// to values is held (obtained with as_regorus_data()). Ensure you protect
+    /// this instance with a Mutex or RwLock via SharedReferenceValues, to make
+    /// this situation impossible.
+    pub fn pop_first(&mut self) -> Option<String> {
+        let s = Arc::get_mut(&mut self.values)
+            .expect("ReferenceValues must be locked for writing")
+            .pop_first()?;
+        // Turn the Value::String(...) back into a String
+        s.as_string().ok().map(|v| v.to_string())
+    }
 }
 
 /// A ReferenceValues instance that can be shared between threads
